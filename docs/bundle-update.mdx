@@ -253,6 +253,18 @@ timoni bundle vet -f bundle.cue
 timoni bundle build -f bundle.cue
 ```
 
+To validate the staged update before writing it, combine `--vet` with the
+update command:
+
+```shell
+timoni bundle update --vet -f bundle.cue
+```
+
+This validates the bundle definition, then writes updates only if vet succeeds.
+Add `--dry-run` to validate without writing. It does not render
+module instances; use `timoni bundle build --update` for the stronger atomic
+update, vet, and render workflow.
+
 ## Continuous updates with GitHub Actions
 
 To open a pull request with the updates on a schedule, run the update

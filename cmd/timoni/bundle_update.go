@@ -54,6 +54,10 @@ With '--oci', an explicit 'oci://repository=path' mapping adds a local OCI
 archive or image layout for the specified repository. Timoni verifies the
 manifest version and artifact digest; it never infers the repository from the
 path.
+
+With '--vet', Timoni validates the staged bundle before writing updates.
+With '--dry-run --vet', it validates the staged update without writing files.
+Use 'bundle build --update' when the updated modules must also be rendered.
 `,
 	Example: `  # Update the module references according to the policies declared in the bundle
   timoni bundle update -f bundle.cue
@@ -69,6 +73,9 @@ path.
 
   # Update from a local OCI archive, explicitly mapped to its repository
   timoni bundle update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar -f bundle.cue
+
+  # Validate the staged update before writing it
+  timoni bundle update --vet -f bundle.cue
 `,
 	Args: cobra.NoArgs,
 	RunE: runBundleUpdateCmd,
@@ -79,6 +86,7 @@ type bundleUpdateFlags struct {
 	creds      flags.Credentials
 	level      string
 	dryrun     bool
+	vet        bool
 	localIndex string
 	localOCI   []string
 }
@@ -93,6 +101,8 @@ func init() {
 		"The update level for the module references without an update attribute, one of: none, patch, minor, major.")
 	bundleUpdateCmd.Flags().BoolVar(&bundleUpdateArgs.dryrun, "dry-run", false,
 		"Print the available updates without modifying the files.")
+	bundleUpdateCmd.Flags().BoolVar(&bundleUpdateArgs.vet, "vet", false,
+		"Validate the staged bundle before writing updates.")
 	bundleUpdateCmd.Flags().StringVar(&bundleUpdateArgs.localIndex, "local-index", "",
 		"CUE file that maps module identities and semantic versions to verified local sources.")
 	bundleUpdateCmd.Flags().StringArrayVar(&bundleUpdateArgs.localOCI, "oci", nil,
@@ -115,6 +125,12 @@ func runBundleUpdateCmd(cmd *cobra.Command, args []string) error {
 	tx, err := prepareBundleUpdate(cmd, files, workdir, bundleUpdateArgs.level, bundleUpdateArgs.localIndex, bundleUpdateArgs.localOCI, bundleUpdateArgs.creds.String())
 	if err != nil {
 		return err
+	}
+
+	if bundleUpdateArgs.vet {
+		if err := runBundleUpdateVet(cmd, files, tx.overrides); err != nil {
+			return err
+		}
 	}
 
 	if len(tx.plan.Changes) == 0 {
@@ -141,6 +157,13 @@ func runBundleUpdateCmd(cmd *cobra.Command, args []string) error {
 		log.Info(fmt.Sprintf("updated %s", fmtRelPath(file)))
 	}
 	return nil
+}
+
+// runBundleUpdateVet validates a bundle using the runtime semantics of the
+// atomic 'bundle build --update' path.
+func runBundleUpdateVet(cmd *cobra.Command, files []string, overrides map[string][]byte) error {
+	offline := bundleArgs.runtimeFromEnv || len(bundleArgs.runtimeFiles) == 0
+	return runBundleVet(cmd, files, offline, overrides)
 }
 
 // writeBundleFiles writes the updated content of the given files after

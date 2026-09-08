@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	. "github.com/onsi/gomega"
+	"github.com/spf13/cobra"
 	apiv1 "github.com/stefanprodan/timoni/api/v1alpha1"
 	"github.com/stefanprodan/timoni/internal/engine"
 	"github.com/stefanprodan/timoni/internal/oci"
@@ -122,6 +124,40 @@ bundle: {
 		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(output).To(ContainSubstring("all module references are up to date"))
 		g.Expect(readFile(bundlePath)).To(Equal(updated))
+	})
+
+	t.Run("vets staged updates before writing", func(t *testing.T) {
+		g := NewWithT(t)
+		bundlePath := writeBundle(bundleData)
+
+		output, err := executeCommand(fmt.Sprintf("bundle update --vet -f %s", bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(output).To(ContainSubstring("pinned: oci://" + modURL + " 1.0.0@"))
+		g.Expect(readFile(bundlePath)).To(ContainSubstring(`version: "1.1.0" @timoni(update:semver:1.x)`))
+
+		output, err = executeCommand(fmt.Sprintf("bundle update --vet -f %s", bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(output).To(ContainSubstring("all module references are up to date"))
+	})
+
+	t.Run("vets a dry-run without writing", func(t *testing.T) {
+		g := NewWithT(t)
+		bundlePath := writeBundle(bundleData)
+
+		output, err := executeCommand(fmt.Sprintf("bundle update --vet --dry-run -f %s", bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(output).To(ContainSubstring("(dry run)"))
+		g.Expect(readFile(bundlePath)).To(Equal(bundleData))
+	})
+
+	t.Run("does not write when staged vet fails", func(t *testing.T) {
+		g := NewWithT(t)
+		invalid := strings.Replace(bundleData, "\t\t\tnamespace: \"test\"", "\t\t\tnamespace: \"\"", 1)
+		bundlePath := writeBundle(invalid)
+
+		_, err := executeCommand(fmt.Sprintf("bundle update --vet -f %s", bundlePath))
+		g.Expect(err).To(MatchError(ContainSubstring("failed to build bundle")))
+		g.Expect(readFile(bundlePath)).To(Equal(invalid))
 	})
 
 	t.Run("updates the unmarked references to the level", func(t *testing.T) {
@@ -238,7 +274,7 @@ bundle: {
 		g.Expect(output).To(ContainSubstring("1.0.0@" + digestOne + " -> 1.1.0@" + digestTwo))
 		g.Expect(readFile(bundlePath)).To(Equal(bundle))
 
-		_, err = executeCommand(fmt.Sprintf("bundle update --local-index %s -f %s", indexPath, bundlePath))
+		_, err = executeCommand(fmt.Sprintf("bundle update --local-index %s --vet -f %s", indexPath, bundlePath))
 		g.Expect(err).ToNot(HaveOccurred())
 		updated := readFile(bundlePath)
 		g.Expect(updated).To(ContainSubstring("file://" + moduleTwo))
@@ -324,7 +360,6 @@ bundle: {
 	})
 }
 
- 
 func TestWriteBundleFilesRejectsConcurrentChange(t *testing.T) {
 	g := NewWithT(t)
 	file := filepath.Join(t.TempDir(), "bundle.cue")
@@ -336,6 +371,43 @@ func TestWriteBundleFilesRejectsConcurrentChange(t *testing.T) {
 	data, err := os.ReadFile(file)
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(data).To(Equal([]byte("changed")))
+}
+
+func TestRunBundleVetUsesStagedOverrides(t *testing.T) {
+	g := NewWithT(t)
+	bundlePath := filepath.Join(t.TempDir(), "bundle.cue")
+	original := `bundle: {
+	apiVersion: "v1alpha1"
+	name: "test"
+	instances: test: {
+		module: {
+			url: "oci://docker.io/test"
+			version: "latest"
+		}
+		namespace: ""
+		values: {}
+	}
+}
+`
+	staged := strings.Replace(original, `namespace: ""`, `namespace: "default"`, 1)
+	g.Expect(os.WriteFile(bundlePath, []byte(original), 0o644)).To(Succeed())
+
+	previousBundleArgs := bundleArgs
+	previousVetArgs := bundleVetArgs
+	t.Cleanup(func() {
+		bundleArgs = previousBundleArgs
+		bundleVetArgs = previousVetArgs
+	})
+	bundleArgs = bundleFlags{}
+	bundleVetArgs = bundleVetFlags{}
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	err := runBundleVet(cmd, []string{bundlePath}, true, map[string][]byte{bundlePath: []byte(staged)})
+	g.Expect(err).ToNot(HaveOccurred())
+	data, err := os.ReadFile(bundlePath)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(data).To(Equal([]byte(original)))
 }
 
 func Test_BundleUpdateLocalOCI(t *testing.T) {
@@ -383,7 +455,7 @@ func Test_BundleUpdateLocalOCI(t *testing.T) {
 	g.Expect(output).To(ContainSubstring("1.0.0@sha256:" + strings.Repeat("0", 64) + " -> 1.1.0@" + digest))
 	g.Expect(readBundle()).To(Equal(bundle))
 
-	_, err = executeCommand(fmt.Sprintf("bundle update --oci %s -f %s", mapping, bundlePath))
+	_, err = executeCommand(fmt.Sprintf("bundle update --oci %s --vet -f %s", mapping, bundlePath))
 	g.Expect(err).ToNot(HaveOccurred())
 	updated := readBundle()
 	g.Expect(updated).To(ContainSubstring("url: \"file://" + archive + "\""))

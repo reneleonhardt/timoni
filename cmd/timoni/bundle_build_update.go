@@ -140,8 +140,7 @@ func runBundleBuildWithUpdate(cmd *cobra.Command, files []string, workdir string
 		log.Info(describeChange(change))
 	}
 
-	offline := bundleArgs.runtimeFromEnv || len(bundleArgs.runtimeFiles) == 0
-	if err := runBundleVet(cmd, files, offline, tx.overrides); err != nil {
+	if err := runBundleUpdateVet(cmd, files, tx.overrides); err != nil {
 		return err
 	}
 

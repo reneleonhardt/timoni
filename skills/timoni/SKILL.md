@@ -6,7 +6,7 @@ metadata:
   author: Stefan Prodan
   homepage: https://timoni.sh
   source: https://github.com/stefanprodan/timoni
-  version: "0.5.0"
+  version: "0.6.0"
 ---
 
 # Timoni
@@ -75,7 +75,7 @@ below.
 | Update references and render atomically | `timoni bundle build --update -f bundle.cue [--local-index index.cue] [--oci oci://<repo>=<path>]` |
 | Status | `timoni bundle status -f bundle.cue` or `timoni bundle status <name>` |
 | Delete | `timoni bundle delete -f bundle.cue` or `timoni bundle delete <name>` |
-| Update module versions per policy | `timoni bundle update -f bundle.cue [--level patch\|minor\|major]` |
+| Update module versions per policy | `timoni bundle update -f bundle.cue [--level patch\|minor\|major] [--vet]` |
 | Preview module updates | `timoni bundle update -f bundle.cue --dry-run` (prints `old -> new` per instance, writes nothing) |
 | With a runtime | add `-r runtime.cue`; select with `--runtime-cluster <name>` / `--runtime-group <group>` |
 | Runtime values from CI env vars | add `--runtime-from-env` |
@@ -213,9 +213,10 @@ bundle: {
   `--oci oci://repository=path` for local OCI artifacts; each is an explicit
   source authority, and the selected source is verified again when the bundle
   is built.
-  For update-only workflows, run `timoni bundle vet` and `timoni bundle build`
-  afterwards. The update command does not validate values against the new module
-  schema.
+  Add `--vet` to validate the staged bundle before writing updates; combine it
+  with `--dry-run` to validate without writing. This checks the
+  bundle definition but not module values against the new module schema.
+  For full update, vet, and render atomicity, use `timoni bundle build --update`.
 
 ## Runtimes and multi-cluster
 
