@@ -6,7 +6,7 @@ metadata:
   author: Stefan Prodan
   homepage: https://timoni.sh
   source: https://github.com/stefanprodan/timoni
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
 # Timoni
@@ -72,6 +72,7 @@ below.
 | Apply | `timoni bundle apply -f bundle.cue [-f bundle_secrets.cue]` |
 | Render to files | `timoni bundle build -f bundle.cue --output-dir ./manifests` |
 | Render to stdout without Secret values | `timoni bundle build -f bundle.cue --mask-secrets` |
+| Update references and render atomically | `timoni bundle build --update -f bundle.cue [--local-index index.cue] [--oci oci://<repo>=<path>]` |
 | Status | `timoni bundle status -f bundle.cue` or `timoni bundle status <name>` |
 | Delete | `timoni bundle delete -f bundle.cue` or `timoni bundle delete <name>` |
 | Update module versions per policy | `timoni bundle update -f bundle.cue [--level patch\|minor\|major]` |
@@ -189,6 +190,12 @@ bundle: {
   artifact digest before planning and fetching, then rewrites the selected
   source to `file://`. `--oci` works independently of `--local-index`, and
   bundles may mix remote OCI, local OCI, and mutable local sources.
+- To update and render in one transaction, use `timoni bundle build --update`
+  with `--local-index` and/or repeatable `--oci` mappings. Timoni plans and
+  verifies the selected sources, then vets and builds from the same in-memory
+  inputs. It writes the bundle files and exposes rendered stdout only after both
+  succeed. Ordinary `bundle build` and `bundle update` remain unchanged. The
+  combined command rejects `-f -` and `--output-dir`.
 - Split a bundle across files and merge with repeated `-f` (for example a
   `bundle_secrets.cue` kept out of git or piped from stdin with `-f -`).
   SOPS-encrypted YAML/JSON partials:
@@ -206,8 +213,9 @@ bundle: {
   `--oci oci://repository=path` for local OCI artifacts; each is an explicit
   source authority, and the selected source is verified again when the bundle
   is built.
-  Run `timoni bundle vet` and `timoni bundle build` afterwards. The update
-  does not validate values against the new module schema.
+  For update-only workflows, run `timoni bundle vet` and `timoni bundle build`
+  afterwards. The update command does not validate values against the new module
+  schema.
 
 ## Runtimes and multi-cluster
 

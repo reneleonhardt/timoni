@@ -18,20 +18,16 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
-	"cuelang.org/go/cue/cuecontext"
 	"github.com/spf13/cobra"
 
 	"github.com/stefanprodan/timoni/internal/engine"
 	"github.com/stefanprodan/timoni/internal/flags"
 	"github.com/stefanprodan/timoni/internal/logger"
-	"github.com/stefanprodan/timoni/internal/oci"
 )
 
 var bundleUpdateCmd = &cobra.Command{
@@ -51,13 +47,13 @@ that they import:
 References without an attribute follow the '--level' flag.
 
 With '--local-index', an explicit CUE index maps module identities and semantic
-versions to verified local sources. Matching OCI references can switch to those
-sources; unindexed OCI references continue to use the registry.
+versions to verified local sources. A matching OCI reference can switch to one
+of those sources; unindexed OCI references continue to use the registry.
 
 With '--oci', an explicit 'oci://repository=path' mapping adds a local OCI
-archive or image layout for the specified repository. Local artifacts are
-verified against their manifest digest and version; the repository is never
-inferred from the path.
+archive or image layout for the specified repository. Timoni verifies the
+manifest version and artifact digest; it never infers the repository from the
+path.
 `,
 	Example: `  # Update the module references according to the policies declared in the bundle
   timoni bundle update -f bundle.cue
@@ -116,105 +112,32 @@ func runBundleUpdateCmd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(cmd.Context(), rootArgs.timeout)
-	defer cancel()
-
-	updater := engine.NewBundleUpdater(cuecontext.New(), files)
-	updater.SetWorkdir(workdir)
-	if err := updater.SetLevel(bundleUpdateArgs.level); err != nil {
-		return err
-	}
-
-	var lister engine.ModuleVersionLister = &engine.OCIModuleVersionLister{
-		Opts: oci.Options(ctx, bundleUpdateArgs.creds.String(), rootArgs.registryInsecure),
-	}
-	var localIndex *engine.LocalModuleIndexLister
-	if bundleUpdateArgs.localIndex != "" {
-		localIndex, err = engine.NewLocalModuleIndexLister(bundleUpdateArgs.localIndex, lister)
-		if err != nil {
-			return err
-		}
-		updater.SetLocalIndex(localIndex)
-		lister = localIndex
-	}
-	if len(bundleUpdateArgs.localOCI) > 0 {
-		artifacts, err := engine.NewLocalModuleArtifactLister(bundleUpdateArgs.localOCI, lister)
-		if err != nil {
-			return err
-		}
-		updater.SetLocalArtifacts(artifacts)
-		lister = artifacts
-	}
-
-	if err := updater.Load(); err != nil {
-		return describeErr(workdir, "failed to build bundle", err)
-	}
-
-	plan, err := updater.Plan(ctx, lister)
-	if plan != nil {
-		for _, skip := range plan.Skipped {
-			log.Info(fmt.Sprintf("instance %s skipped: %s", skip.Instance, skip.Reason))
-		}
-	}
+	tx, err := prepareBundleUpdate(cmd, files, workdir, bundleUpdateArgs.level, bundleUpdateArgs.localIndex, bundleUpdateArgs.localOCI, bundleUpdateArgs.creds.String())
 	if err != nil {
 		return err
 	}
 
-	if len(plan.Changes) == 0 {
+	if len(tx.plan.Changes) == 0 {
 		log.Info("all module references are up to date")
 		return nil
 	}
 
-	var changedFiles []string
-	for _, change := range plan.Changes {
-		for _, file := range change.Files {
-			if !slices.Contains(changedFiles, file) {
-				changedFiles = append(changedFiles, file)
-			}
-		}
-	}
-	slices.Sort(changedFiles)
-
-	originals := make(map[string][]byte, len(changedFiles))
-	for _, file := range changedFiles {
-		originals[file], err = updater.Source(file)
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := updater.Apply(plan); err != nil {
-		return describeErr(workdir, "update failed", err)
-	}
-
-	updated := make(map[string][]byte, len(changedFiles))
-	for _, file := range changedFiles {
-		updated[file], err = updater.Format(file)
-		if err != nil {
-			return err
-		}
-	}
-
-	for _, change := range plan.Changes {
+	for _, change := range tx.plan.Changes {
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), describeChange(change)); err != nil {
 			return err
 		}
 	}
 
-	changedFiles = slices.DeleteFunc(changedFiles, func(file string) bool {
-		return bytes.Equal(originals[file], updated[file])
-	})
-
 	if bundleUpdateArgs.dryrun {
 		log.Info(fmt.Sprintf("%d module reference(s) can be updated in %s %s",
-			len(plan.Changes), strings.Join(relPaths(changedFiles), ", "), logger.ColorizeDryRun("(dry run)")))
+			len(tx.plan.Changes), strings.Join(relPaths(tx.changedFiles), ", "), logger.ColorizeDryRun("(dry run)")))
 		return nil
 	}
 
-	if err := writeBundleFiles(changedFiles, originals, updated); err != nil {
+	if err := writeBundleFiles(tx.changedFiles, tx.originals, tx.updated); err != nil {
 		return err
 	}
-	for _, file := range changedFiles {
+	for _, file := range tx.changedFiles {
 		log.Info(fmt.Sprintf("updated %s", fmtRelPath(file)))
 	}
 	return nil

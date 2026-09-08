@@ -305,7 +305,37 @@ bundle: {
 		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(output).To(ContainSubstring("kind: ConfigMap"))
 		g.Expect(output).To(ContainSubstring("app.kubernetes.io/version: 1.1.0"))
+
+		atomicBundlePath := filepath.Join(root, "atomic-bundle.cue")
+		g.Expect(os.WriteFile(atomicBundlePath, []byte(bundle), 0o644)).To(Succeed())
+		stdout, _, err := executeCommandWithOutErr(fmt.Sprintf("bundle build --update --local-index %s -f %s", indexPath, atomicBundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(stdout).To(HavePrefix("---\n"))
+		g.Expect(stdout).To(ContainSubstring("app.kubernetes.io/version: 1.1.0"))
+		g.Expect(readFile(atomicBundlePath)).To(ContainSubstring("file://" + moduleTwo))
+
+		invalidBundlePath := filepath.Join(root, "invalid-bundle.cue")
+		invalidBundle := strings.Replace(bundle, "values: {}", "values: priority: \"invalid\"", 1)
+		g.Expect(os.WriteFile(invalidBundlePath, []byte(invalidBundle), 0o644)).To(Succeed())
+		stdout, _, err = executeCommandWithOutErr(fmt.Sprintf("bundle build --update --local-index %s -f %s", indexPath, invalidBundlePath))
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(stdout).To(BeEmpty())
+		g.Expect(readFile(invalidBundlePath)).To(Equal(invalidBundle))
 	})
+}
+
+ 
+func TestWriteBundleFilesRejectsConcurrentChange(t *testing.T) {
+	g := NewWithT(t)
+	file := filepath.Join(t.TempDir(), "bundle.cue")
+	original := []byte("before")
+	g.Expect(os.WriteFile(file, []byte("changed"), 0o644)).To(Succeed())
+
+	err := writeBundleFiles([]string{file}, map[string][]byte{file: original}, map[string][]byte{file: []byte("after")})
+	g.Expect(err).To(MatchError(ContainSubstring("changed on disk")))
+	data, err := os.ReadFile(file)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(data).To(Equal([]byte("changed")))
 }
 
 func Test_BundleUpdateLocalOCI(t *testing.T) {
@@ -362,4 +392,84 @@ func Test_BundleUpdateLocalOCI(t *testing.T) {
 
 	_, err = executeCommand(fmt.Sprintf("bundle build -f %s", bundlePath))
 	g.Expect(err).ToNot(HaveOccurred())
+
+	atomicBundlePath := filepath.Join(t.TempDir(), "bundle.cue")
+	g.Expect(os.WriteFile(atomicBundlePath, []byte(bundle), 0o644)).To(Succeed())
+	stdout, _, err := executeCommandWithOutErr(fmt.Sprintf("bundle build --update --oci %s -f %s", mapping, atomicBundlePath))
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(stdout).To(HavePrefix("---\n"))
+	g.Expect(stdout).To(ContainSubstring("app.kubernetes.io/version: 1.1.0"))
+	atomicUpdated, err := os.ReadFile(atomicBundlePath)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(string(atomicUpdated)).To(ContainSubstring("url: \"file://" + archive + "\""))
+}
+
+func Test_BundleBuildUpdateMixedLocalSources(t *testing.T) {
+	g := NewWithT(t)
+	root := t.TempDir()
+	module := filepath.Join(root, "module")
+	g.Expect(os.CopyFS(module, os.DirFS("testdata/module"))).To(Succeed())
+	vendor := filepath.Join(module, "cue.mod/pkg/timoni.sh")
+	g.Expect(os.Remove(vendor)).To(Succeed())
+	g.Expect(os.MkdirAll(vendor, 0o755)).To(Succeed())
+	g.Expect(os.CopyFS(vendor, os.DirFS("../../schemas/timoni.sh"))).To(Succeed())
+
+	indexedDigest, err := engine.ModuleSourceDigest(module)
+	g.Expect(err).ToNot(HaveOccurred())
+	build, err := oci.BuildModuleImage(module, nil, map[string]string{
+		apiv1.VersionAnnotation: "1.1.0",
+	})
+	g.Expect(err).ToNot(HaveOccurred())
+	archive := filepath.Join(root, "module.oci.tar")
+	g.Expect(oci.WriteImage(build.Image, archive, oci.FormatArchive, []string{"1.1.0"})).To(Succeed())
+	g.Expect(build.Close()).To(Succeed())
+
+	indexedRepository := "oci://registry.example/indexed/module"
+	artifactRepository := "oci://registry.example/artifact/module"
+	indexPath := filepath.Join(root, "module-index.cue")
+	index := fmt.Sprintf(`modules: {
+	"%s": versions: {
+		"1.0.0": {source: "file://%s", digest: "%s"}
+		"1.1.0": {source: "file://%s", digest: "%s"}
+	}
+}
+`, indexedRepository, module, indexedDigest, module, indexedDigest)
+	g.Expect(os.WriteFile(indexPath, []byte(index), 0o644)).To(Succeed())
+
+	bundlePath := filepath.Join(root, "bundle.cue")
+	bundle := fmt.Sprintf(`bundle: {
+	apiVersion: "v1alpha1"
+	name: "test"
+	instances: {
+		indexed: {
+			module: url: "file://%s"
+			module: version: "1.0.0" @timoni(update:semver:*)
+			module: digest: "%s"
+			namespace: "test"
+			values: priority: 10
+		}
+		artifact: {
+			module: url: "%s"
+			module: version: "1.0.0" @timoni(update:semver:*)
+			module: digest: "sha256:%s"
+			namespace: "test"
+			values: priority: 10
+		}
+	}
+}
+`, module, indexedDigest, artifactRepository, strings.Repeat("0", 64))
+	g.Expect(os.WriteFile(bundlePath, []byte(bundle), 0o644)).To(Succeed())
+
+	stdout, _, err := executeCommandWithOutErr(fmt.Sprintf(
+		"bundle build --update --local-index %s --oci %s=%s -f %s",
+		indexPath, artifactRepository, archive, bundlePath,
+	))
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(stdout).To(HavePrefix("---\n"))
+	g.Expect(stdout).To(ContainSubstring("app.kubernetes.io/version: 1.1.0"))
+
+	updated, err := os.ReadFile(bundlePath)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(string(updated)).To(ContainSubstring("url: \"file://" + module + "\""))
+	g.Expect(string(updated)).To(ContainSubstring("url: \"file://" + archive + "\""))
 }
