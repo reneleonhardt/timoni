@@ -49,6 +49,15 @@ that they import:
   @timoni(update:none)                 exclude the module reference from updates
 
 References without an attribute follow the '--level' flag.
+
+With '--local-index', an explicit CUE index maps module identities and semantic
+versions to verified local sources. Matching OCI references can switch to those
+sources; unindexed OCI references continue to use the registry.
+
+With '--oci', an explicit 'oci://repository=path' mapping adds a local OCI
+archive or image layout for the specified repository. Local artifacts are
+verified against their manifest digest and version; the repository is never
+inferred from the path.
 `,
 	Example: `  # Update the module references according to the policies declared in the bundle
   timoni bundle update -f bundle.cue
@@ -58,16 +67,24 @@ References without an attribute follow the '--level' flag.
 
   # Print the available updates without modifying the files
   timoni bundle update -f bundle.cue --dry-run
+
+  # Update an indexed local module
+  timoni bundle update --local-index module-index.cue -f bundle.cue
+
+  # Update from a local OCI archive, explicitly mapped to its repository
+  timoni bundle update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar -f bundle.cue
 `,
 	Args: cobra.NoArgs,
 	RunE: runBundleUpdateCmd,
 }
 
 type bundleUpdateFlags struct {
-	files  []string
-	creds  flags.Credentials
-	level  string
-	dryrun bool
+	files      []string
+	creds      flags.Credentials
+	level      string
+	dryrun     bool
+	localIndex string
+	localOCI   []string
 }
 
 var bundleUpdateArgs bundleUpdateFlags
@@ -80,6 +97,10 @@ func init() {
 		"The update level for the module references without an update attribute, one of: none, patch, minor, major.")
 	bundleUpdateCmd.Flags().BoolVar(&bundleUpdateArgs.dryrun, "dry-run", false,
 		"Print the available updates without modifying the files.")
+	bundleUpdateCmd.Flags().StringVar(&bundleUpdateArgs.localIndex, "local-index", "",
+		"CUE file that maps module identities and semantic versions to verified local sources.")
+	bundleUpdateCmd.Flags().StringArrayVar(&bundleUpdateArgs.localOCI, "oci", nil,
+		"Map a local OCI archive or image layout to a repository as 'oci://repository=path'; repeatable.")
 	bundleCmd.AddCommand(bundleUpdateCmd)
 }
 
@@ -104,13 +125,31 @@ func runBundleUpdateCmd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	var lister engine.ModuleVersionLister = &engine.OCIModuleVersionLister{
+		Opts: oci.Options(ctx, bundleUpdateArgs.creds.String(), rootArgs.registryInsecure),
+	}
+	var localIndex *engine.LocalModuleIndexLister
+	if bundleUpdateArgs.localIndex != "" {
+		localIndex, err = engine.NewLocalModuleIndexLister(bundleUpdateArgs.localIndex, lister)
+		if err != nil {
+			return err
+		}
+		updater.SetLocalIndex(localIndex)
+		lister = localIndex
+	}
+	if len(bundleUpdateArgs.localOCI) > 0 {
+		artifacts, err := engine.NewLocalModuleArtifactLister(bundleUpdateArgs.localOCI, lister)
+		if err != nil {
+			return err
+		}
+		updater.SetLocalArtifacts(artifacts)
+		lister = artifacts
+	}
+
 	if err := updater.Load(); err != nil {
 		return describeErr(workdir, "failed to build bundle", err)
 	}
 
-	lister := &engine.OCIModuleVersionLister{
-		Opts: oci.Options(ctx, bundleUpdateArgs.creds.String(), rootArgs.registryInsecure),
-	}
 	plan, err := updater.Plan(ctx, lister)
 	if plan != nil {
 		for _, skip := range plan.Skipped {
@@ -229,5 +268,9 @@ func describeChange(change *engine.UpdateChange) string {
 		}
 		to += "@" + change.ToDigest
 	}
-	return fmt.Sprintf("%s: %s %s -> %s", strings.Join(change.Instances, ", "), change.Repository, from, to)
+	source := ""
+	if change.ToSource != "" {
+		source = fmt.Sprintf(" source %s -> %s", change.FromSource, change.ToSource)
+	}
+	return fmt.Sprintf("%s: %s%s %s -> %s", strings.Join(change.Instances, ", "), change.Repository, source, from, to)
 }

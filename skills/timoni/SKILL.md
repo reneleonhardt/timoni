@@ -6,7 +6,7 @@ metadata:
   author: Stefan Prodan
   homepage: https://timoni.sh
   source: https://github.com/stefanprodan/timoni
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Timoni
@@ -170,8 +170,25 @@ bundle: {
   deterministic retrieval.
 - Local modules in a bundle use `module: url: "file://../modules/app"`,
   relative to the bundle file, or an absolute path as
-  `file:///abs/path/to/module`; `version`/`digest` are ignored and the
-  instance gets version `0.0.0-devel`.
+  `file:///abs/path/to/module`; ordinary local references ignore `version` and
+  `digest` and the instance gets version `0.0.0-devel`. Indexed local updates
+  are the reproducible exception: they carry the indexed version and verify
+  the source-tree digest during rendering.
+- `timoni bundle update` can update extracted local modules with
+  `--local-index <index.cue>`. The index maps exact `oci://` identities and
+  semantic versions to `file://` sources pinned by a `sha256:<64 hex>` digest;
+  the client hashes regular files and symlink target strings, and rejects
+  other special files. A matching OCI reference may switch to its indexed local
+  source; other OCI references keep the registry fallback. The digest is a
+  source-tree digest for indexed local modules and an artifact digest for OCI
+  modules. The updater verifies the current and selected sources before
+  rewriting `url`, `version`, and `digest`.
+- For a local OCI archive or image layout, use repeatable
+  `--oci oci://repository=path` mappings. The repository must be explicit;
+  path-only inputs are rejected. Timoni verifies the manifest version and
+  artifact digest before planning and fetching, then rewrites the selected
+  source to `file://`. `--oci` works independently of `--local-index`, and
+  bundles may mix remote OCI, local OCI, and mutable local sources.
 - Split a bundle across files and merge with repeated `-f` (for example a
   `bundle_secrets.cue` kept out of git or piped from stdin with `-f -`).
   SOPS-encrypted YAML/JSON partials:
@@ -185,8 +202,12 @@ bundle: {
   digests according to the `@timoni(update:semver:<constraint>|digest|none)`
   attribute on the `version` field; `--level patch|minor|major` updates the
   references without an attribute, and `--dry-run` only prints the changes.
-  Run `timoni bundle vet` and `timoni bundle build` afterwards, the update
-  does not validate the values against the new module schema.
+  Add `--local-index <index.cue>` for extracted local modules or
+  `--oci oci://repository=path` for local OCI artifacts; each is an explicit
+  source authority, and the selected source is verified again when the bundle
+  is built.
+  Run `timoni bundle vet` and `timoni bundle build` afterwards. The update
+  does not validate values against the new module schema.
 
 ## Runtimes and multi-cluster
 

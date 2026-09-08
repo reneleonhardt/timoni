@@ -25,6 +25,9 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	. "github.com/onsi/gomega"
+	apiv1 "github.com/stefanprodan/timoni/api/v1alpha1"
+	"github.com/stefanprodan/timoni/internal/engine"
+	"github.com/stefanprodan/timoni/internal/oci"
 )
 
 func Test_BundleUpdate(t *testing.T) {
@@ -81,6 +84,7 @@ bundle: {
 		}
 	}
 }
+
 `, modURL, digestOf("1.0.0"))
 
 	t.Run("prints the updates without modifying the files", func(t *testing.T) {
@@ -190,4 +194,172 @@ bundle: {
 		g.Expect(err).To(MatchError(ContainSubstring("instances unmarked: listing versions of")))
 		g.Expect(readFile(bundlePath)).To(Equal(unreachable))
 	})
+
+	t.Run("updates an indexed local module in dry-run and apply modes", func(t *testing.T) {
+		g := NewWithT(t)
+		root := t.TempDir()
+		moduleOne := filepath.Join(root, "module-1.0.0")
+		moduleTwo := filepath.Join(root, "module-1.1.0")
+		for _, module := range []string{moduleOne, moduleTwo} {
+			g.Expect(os.MkdirAll(module, 0o755)).To(Succeed())
+			g.Expect(os.WriteFile(filepath.Join(module, "marker"), []byte(module), 0o644)).To(Succeed())
+		}
+		digestOne, err := engine.ModuleSourceDigest(moduleOne)
+		g.Expect(err).ToNot(HaveOccurred())
+		digestTwo, err := engine.ModuleSourceDigest(moduleTwo)
+		g.Expect(err).ToNot(HaveOccurred())
+		indexPath := filepath.Join(root, "module-index.cue")
+		index := fmt.Sprintf(`modules: {
+	"oci://registry.example/test/module": versions: {
+		"1.0.0": {source: "file://%s", digest: "%s"}
+		"1.1.0": {source: "file://%s", digest: "%s"}
+	}
+}
+`, moduleOne, digestOne, moduleTwo, digestTwo)
+		g.Expect(os.WriteFile(indexPath, []byte(index), 0o644)).To(Succeed())
+		bundlePath := filepath.Join(root, "bundle.cue")
+		bundle := fmt.Sprintf(`bundle: {
+	apiVersion: "v1alpha1"
+	name: "test"
+	instances: app: {
+		module: url: "file://%s"
+		module: version: "1.0.0" @timoni(update:semver:*)
+		module: digest: "%s"
+		namespace: "test"
+		values: {}
+	}
+}
+`, moduleOne, digestOne)
+		g.Expect(os.WriteFile(bundlePath, []byte(bundle), 0o644)).To(Succeed())
+
+		output, err := executeCommand(fmt.Sprintf("bundle update --local-index %s -f %s --dry-run", indexPath, bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(output).To(ContainSubstring("file://" + moduleOne + " -> file://" + moduleTwo))
+		g.Expect(output).To(ContainSubstring("1.0.0@" + digestOne + " -> 1.1.0@" + digestTwo))
+		g.Expect(readFile(bundlePath)).To(Equal(bundle))
+
+		_, err = executeCommand(fmt.Sprintf("bundle update --local-index %s -f %s", indexPath, bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		updated := readFile(bundlePath)
+		g.Expect(updated).To(ContainSubstring("file://" + moduleTwo))
+		g.Expect(updated).To(ContainSubstring(`version: "1.1.0" @timoni(update:semver:*)`))
+		g.Expect(updated).To(ContainSubstring(`digest: "` + digestTwo + `"`))
+	})
+
+	t.Run("switches a matching OCI module to an indexed source", func(t *testing.T) {
+		g := NewWithT(t)
+		root := t.TempDir()
+		moduleOne := filepath.Join(root, "module-1.0.0")
+		moduleTwo := filepath.Join(root, "module-1.1.0")
+		for _, module := range []string{moduleOne, moduleTwo} {
+			g.Expect(os.MkdirAll(module, 0o755)).To(Succeed())
+			g.Expect(os.CopyFS(module, os.DirFS("testdata/module"))).To(Succeed())
+			g.Expect(os.MkdirAll(filepath.Join(module, "cue.mod/pkg"), 0o755)).To(Succeed())
+			schemas, err := filepath.Abs("../../schemas/timoni.sh")
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(os.Remove(filepath.Join(module, "cue.mod/pkg/timoni.sh"))).To(Succeed())
+			g.Expect(os.Symlink(schemas, filepath.Join(module, "cue.mod/pkg/timoni.sh"))).To(Succeed())
+		}
+		digestOne, err := engine.ModuleSourceDigest(moduleOne)
+		g.Expect(err).ToNot(HaveOccurred())
+		digestTwo, err := engine.ModuleSourceDigest(moduleTwo)
+		g.Expect(err).ToNot(HaveOccurred())
+		moduleURL := "oci://registry.example/test/module"
+		indexPath := filepath.Join(root, "module-index.cue")
+		index := fmt.Sprintf(`modules: {
+	"%s": versions: {
+		"1.0.0": {source: "file://%s", digest: "%s"}
+		"1.1.0": {source: "file://%s", digest: "%s"}
+	}
+}
+`, moduleURL, moduleOne, digestOne, moduleTwo, digestTwo)
+		g.Expect(os.WriteFile(indexPath, []byte(index), 0o644)).To(Succeed())
+		bundlePath := filepath.Join(root, "bundle.cue")
+		bundle := fmt.Sprintf(`bundle: {
+	apiVersion: "v1alpha1"
+	name: "test"
+	instances: app: {
+		module: url: "%s"
+		module: version: "1.0.0" @timoni(update:semver:*)
+		module: digest: "%s"
+		namespace: "test"
+		values: {}
+	}
+}
+`, moduleURL, digestOne)
+		g.Expect(os.WriteFile(bundlePath, []byte(bundle), 0o644)).To(Succeed())
+
+		output, err := executeCommand(fmt.Sprintf("bundle update --local-index %s -f %s --dry-run", indexPath, bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(output).To(ContainSubstring(moduleURL + " -> file://" + moduleTwo))
+		g.Expect(readFile(bundlePath)).To(Equal(bundle))
+
+		_, err = executeCommand(fmt.Sprintf("bundle update --local-index %s -f %s", indexPath, bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		updated := readFile(bundlePath)
+		g.Expect(updated).To(ContainSubstring("file://" + moduleTwo))
+		g.Expect(updated).To(ContainSubstring(`version: "1.1.0" @timoni(update:semver:*)`))
+		g.Expect(updated).To(ContainSubstring(`digest: "` + digestTwo + `"`))
+
+		output, err = executeCommand(fmt.Sprintf("bundle build -f %s", bundlePath))
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(output).To(ContainSubstring("kind: ConfigMap"))
+		g.Expect(output).To(ContainSubstring("app.kubernetes.io/version: 1.1.0"))
+	})
+}
+
+func Test_BundleUpdateLocalOCI(t *testing.T) {
+	g := NewWithT(t)
+	module := filepath.Join(t.TempDir(), "module")
+	g.Expect(os.CopyFS(module, os.DirFS("testdata/module"))).To(Succeed())
+	vendor := filepath.Join(module, "cue.mod/pkg/timoni.sh")
+	g.Expect(os.Remove(vendor)).To(Succeed())
+	g.Expect(os.MkdirAll(vendor, 0o755)).To(Succeed())
+	g.Expect(os.CopyFS(vendor, os.DirFS("../../schemas/timoni.sh"))).To(Succeed())
+	build, err := oci.BuildModuleImage(module, nil, map[string]string{
+		apiv1.VersionAnnotation: "1.1.0",
+	})
+	g.Expect(err).ToNot(HaveOccurred())
+	archive := filepath.Join(t.TempDir(), "module.oci.tar")
+	g.Expect(oci.WriteImage(build.Image, archive, oci.FormatArchive, []string{"1.1.0"})).To(Succeed())
+	digest := build.Digest.String()
+	g.Expect(build.Close()).To(Succeed())
+
+	repository := "oci://registry.example/team/module"
+	bundlePath := filepath.Join(t.TempDir(), "bundle.cue")
+	bundle := fmt.Sprintf(`bundle: {
+	apiVersion: "v1alpha1"
+	name: "test"
+	instances: app: {
+		module: url: "%s"
+		module: version: "1.0.0" @timoni(update:semver:*)
+		module: digest: "sha256:%s"
+		namespace: "test"
+		values: priority: 10
+	}
+}
+`, repository, strings.Repeat("0", 64))
+	g.Expect(os.WriteFile(bundlePath, []byte(bundle), 0o644)).To(Succeed())
+	readBundle := func() string {
+		data, err := os.ReadFile(bundlePath)
+		g.Expect(err).ToNot(HaveOccurred())
+		return string(data)
+	}
+	mapping := repository + "=" + archive
+
+	output, err := executeCommand(fmt.Sprintf("bundle update --oci %s -f %s --dry-run", mapping, bundlePath))
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(output).To(ContainSubstring("source " + repository + " -> file://" + archive))
+	g.Expect(output).To(ContainSubstring("1.0.0@sha256:" + strings.Repeat("0", 64) + " -> 1.1.0@" + digest))
+	g.Expect(readBundle()).To(Equal(bundle))
+
+	_, err = executeCommand(fmt.Sprintf("bundle update --oci %s -f %s", mapping, bundlePath))
+	g.Expect(err).ToNot(HaveOccurred())
+	updated := readBundle()
+	g.Expect(updated).To(ContainSubstring("url: \"file://" + archive + "\""))
+	g.Expect(updated).To(ContainSubstring(`version: "1.1.0" @timoni(update:semver:*)`))
+	g.Expect(updated).To(ContainSubstring(`digest: "` + digest + `"`))
+
+	_, err = executeCommand(fmt.Sprintf("bundle build -f %s", bundlePath))
+	g.Expect(err).ToNot(HaveOccurred())
 }
