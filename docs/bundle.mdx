@@ -488,11 +488,8 @@ To update module references and render the updated bundle in one transaction, us
 `--update` with an explicit local source authority:
 
 ```shell
-timoni bundle build --update --local-index module-index.cue -f bundle.cue \
-  --runtime-from-env --mask-secrets
-timoni bundle build --update \
-  --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar \
-  -f bundle.cue --runtime-from-env --mask-secrets
+timoni bundle build --update --local-index module-index.cue -f bundle.cue --runtime-from-env --mask-secrets
+timoni bundle build --update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar -f bundle.cue --runtime-from-env --mask-secrets
 ```
 
 The command plans and verifies the selected sources, then runs vet and build
@@ -704,13 +701,11 @@ registry fallback. The updater verifies both the current and selected trees
 before rewriting the module URL, version, and digest. Without this explicit
 flag, local module references are skipped.
 
-The same authorities can be used directly by the build transaction:
+The same source mappings can be used directly by the build transaction:
 
 ```shell
 timoni bundle build --update --local-index module-index.cue -f bundle.cue
-timoni bundle build --update \
-  --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar \
-  -f bundle.cue
+timoni bundle build --update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar -f bundle.cue
 ```
 
 The repeatable `--oci` mapping names the repository explicitly because a local

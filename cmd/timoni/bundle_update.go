@@ -159,8 +159,8 @@ func runBundleUpdateCmd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runBundleUpdateVet validates a bundle using the runtime semantics of the
-// atomic 'bundle build --update' path.
+// runBundleUpdateVet validates a bundle with the in-memory overrides used by
+// the atomic 'bundle build --update' path.
 func runBundleUpdateVet(cmd *cobra.Command, files []string, overrides map[string][]byte) error {
 	offline := bundleArgs.runtimeFromEnv || len(bundleArgs.runtimeFiles) == 0
 	return runBundleVet(cmd, files, offline, overrides)

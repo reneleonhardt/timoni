@@ -72,7 +72,7 @@ below.
 | Apply | `timoni bundle apply -f bundle.cue [-f bundle_secrets.cue]` |
 | Render to files | `timoni bundle build -f bundle.cue --output-dir ./manifests` |
 | Render to stdout without Secret values | `timoni bundle build -f bundle.cue --mask-secrets` |
-| Update references and render atomically | `timoni bundle build --update -f bundle.cue [--local-index index.cue] [--oci oci://<repo>=<path>]` |
+| Update references and render in one transaction | `timoni bundle build --update -f bundle.cue [--local-index index.cue] [--oci oci://<repo>=<path>]` |
 | Status | `timoni bundle status -f bundle.cue` or `timoni bundle status <name>` |
 | Delete | `timoni bundle delete -f bundle.cue` or `timoni bundle delete <name>` |
 | Update module versions per policy | `timoni bundle update -f bundle.cue [--level patch\|minor\|major] [--vet]` |
@@ -216,7 +216,7 @@ bundle: {
   Add `--vet` to validate the staged bundle before writing updates; combine it
   with `--dry-run` to validate without writing. This checks the
   bundle definition but not module values against the new module schema.
-  For full update, vet, and render atomicity, use `timoni bundle build --update`.
+  For the full staged update, vet, and render workflow, use `timoni bundle build --update`.
 
 ## Runtimes and multi-cluster
 

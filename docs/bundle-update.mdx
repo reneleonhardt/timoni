@@ -84,14 +84,12 @@ modules: {
 Sources are explicit: relative paths resolve from the index file, and no
 registry identity is inferred from a filesystem path. Each source must be a
 directory. Regular files and symlink target strings are hashed; other special
-files are rejected. The client verifies each digest with this deterministic
+files are rejected. The client verifies each digest using this deterministic
 tree hash before planning and fetching:
 
 ```shell
-timoni bundle update --local-index module-index.cue \
-  --dry-run -f bundle.cue
-timoni bundle update --local-index module-index.cue \
-  -f bundle.cue
+timoni bundle update --local-index module-index.cue -f bundle.cue --dry-run
+timoni bundle update --local-index module-index.cue -f bundle.cue
 ```
 
 With `--local-index`, a matching OCI reference may also switch to its indexed
@@ -117,10 +115,8 @@ artifact contains its module version and manifest digest, but not the registry
 repository name:
 
 ```shell
-timoni bundle update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar \
-  --dry-run -f bundle.cue
-timoni bundle update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar \
-  -f bundle.cue
+timoni bundle update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar -f bundle.cue --dry-run
+timoni bundle update --oci oci://registry.example/team/app=.local/artifacts/app.oci.tar -f bundle.cue
 ```
 
 Path-only inputs are rejected; Timoni never infers an OCI identity from a

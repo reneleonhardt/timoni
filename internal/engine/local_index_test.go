@@ -104,7 +104,7 @@ func TestLocalModuleIndexLister_UpdateAndVerifySource(t *testing.T) {
 	g.Expect(string(formatted)).To(ContainSubstring("file://" + moduleTwo))
 	g.Expect(string(formatted)).To(ContainSubstring(digestTwo))
 
-	// Reject a source mutation before applying any bundle literal.
+	// Reject a changed source before applying any bundle updates.
 	g.Expect(os.WriteFile(filepath.Join(moduleTwo, "marker.cue"), []byte("marker: \"changed\"\n"), 0o644)).To(Succeed())
 	updater = NewBundleUpdater(cuecontext.New(), []string{bundlePath})
 	updater.SetLocalIndex(lister)
